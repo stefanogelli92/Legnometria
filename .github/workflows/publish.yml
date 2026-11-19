@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Versione da pubblicare (es. v0.18.0)'
+        required: true
+        default: 'v0.18.0'
 
 permissions:
   contents: read
@@ -20,27 +25,36 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || 'v0.18.0' }}
     steps:
-      - name: Recupera le impostazioni di GitHub Actions
+      - name: Recupera il workflow di pubblicazione
         uses: actions/checkout@v4
 
-      - name: Installa Node.js sul server GitHub, non sul PC
+      - name: Installa Node.js sul server GitHub, non sul computer dell'utente
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Scarica il pacchetto web dalla release
+      - name: Scarica la versione richiesta dalla release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p site
-          gh release download v0.17.2 --repo "$GITHUB_REPOSITORY" --pattern "Legnometria_web_v0_17_2.zip" --dir "$RUNNER_TEMP"
-          unzip -q "$RUNNER_TEMP/Legnometria_web_v0_17_2.zip" -d site
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern 'Legnometria_web_*.zip' --dir "$RUNNER_TEMP"
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP"/Legnometria_web_*.zip)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo 'Errore: la release deve contenere esattamente un file Legnometria_web_*.zip'
+            exit 1
+          fi
+          unzip -q "${packages[0]}" -d site
           test -f site/package.json
           test -f site/index.html
           test -f site/tools/prepare-offline.mjs
+          node --input-type=module -e "import fs from 'node:fs'; let p=JSON.parse(fs.readFileSync('site/package.json')); if ('v'+p.version!==process.env.RELEASE_TAG) {console.error('Tag e versione non corrispondono'); process.exit(1)}"
 
-      - name: Scarica Three.js 0.180.0 sul server GitHub
+      - name: Installa Three.js ufficiale sul server GitHub
         working-directory: site
         run: npm install --ignore-scripts --no-audit --no-fund
 
@@ -52,30 +66,30 @@ jobs:
         working-directory: site
         run: npm run prepare:offline
 
-      - name: Verifica funzionamento offline
+      - name: Verifica dipendenze offline
         working-directory: site
         run: npm run check:offline
 
-      - name: Verifica export HTML 3D indipendente
+      - name: Verifica export HTML 3D autonomo
         working-directory: site
         run: node tools/check-standalone.mjs
 
-      - name: Crea sito statico
+      - name: Crea il sito statico
         working-directory: site
         run: npm run build:static
 
-      - name: Verifica sito distribuibile
+      - name: Verifica il pacchetto distribuibile
         working-directory: site
         run: npm run verify:release
 
       - name: Configura GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Carica sito statico
+      - name: Carica il sito statico
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/dist
 
-      - name: Pubblica sito
+      - name: Pubblica Legnometria
         id: deploy
         uses: actions/deploy-pages@v4
