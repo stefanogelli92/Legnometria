@@ -1,17 +1,19 @@
 name: Pubblica Legnometria
 
+# La pubblicazione parte sempre da main, non dai tag, per rispettare
+# le regole di protezione dell'ambiente github-pages.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Versione da pubblicare (es. v0.18.0)'
+        description: 'Release da pubblicare (es. v0.18.0)'
         required: true
         default: 'v0.18.0'
+        type: string
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -20,41 +22,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-publish:
+  build:
+    name: Compila e verifica Legnometria
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || 'v0.18.0' }}
     steps:
-      - name: Recupera il workflow di pubblicazione
+      - name: Recupera il repository
         uses: actions/checkout@v4
 
-      - name: Installa Node.js sul server GitHub, non sul computer dell'utente
+      - name: Installa Node.js solo sul server GitHub
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Scarica la versione richiesta dalla release
+      - name: Scarica lo ZIP della release scelta
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           mkdir -p site
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern 'Legnometria_web_*.zip' --dir "$RUNNER_TEMP"
           shopt -s nullglob
           packages=("$RUNNER_TEMP"/Legnometria_web_*.zip)
           if [ "${#packages[@]}" -ne 1 ]; then
-            echo 'Errore: la release deve contenere esattamente un file Legnometria_web_*.zip'
+            echo 'Errore: atteso esattamente uno ZIP Legnometria_web_*.zip nella release.'
             exit 1
           fi
           unzip -q "${packages[0]}" -d site
           test -f site/package.json
           test -f site/index.html
           test -f site/tools/prepare-offline.mjs
-          node --input-type=module -e "import fs from 'node:fs'; let p=JSON.parse(fs.readFileSync('site/package.json')); if ('v'+p.version!==process.env.RELEASE_TAG) {console.error('Tag e versione non corrispondono'); process.exit(1)}"
+          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('site/package.json')); if ('v'+p.version!==process.env.RELEASE_TAG) { console.error('Tag e versione package.json non corrispondono'); process.exit(1) }"
 
-      - name: Installa Three.js ufficiale sul server GitHub
+      - name: Installa Three.js ufficiale
         working-directory: site
         run: npm install --ignore-scripts --no-audit --no-fund
 
@@ -70,26 +69,28 @@ jobs:
         working-directory: site
         run: npm run check:offline
 
-      - name: Verifica export HTML 3D autonomo
+      - name: Verifica esportazione HTML 3D autonoma
         working-directory: site
         run: node tools/check-standalone.mjs
 
-      - name: Crea il sito statico
+      - name: Crea sito statico
         working-directory: site
         run: npm run build:static
 
-      - name: Verifica il pacchetto distribuibile
+      - name: Verifica pacchetto distribuibile
         working-directory: site
         run: npm run verify:release
 
       - name: Configura GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Carica il sito statico
+      - name: Carica l'artefatto Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/dist
 
-      - name: Pubblica Legnometria
-        id: deploy
-        uses: actions/deploy-pages@v4
+  deploy:
+    name: Pubblica il sito
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
